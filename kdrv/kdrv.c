@@ -1,10 +1,57 @@
-#include <ntifs.h>
+#include <ntddk.h>
 #include <ntimage.h>
 #include "kdrv.h"
 
-// Not declared in all WDK public header versions — declare manually
-PPEB    NTAPI PsGetProcessPeb(PEPROCESS Process);
+// ---- manual declarations (not reliably in WDK public headers) ---------------
+PVOID   NTAPI PsGetProcessPeb(PEPROCESS Process);
 PETHREAD NTAPI PsGetNextProcessThread(PEPROCESS Process, PETHREAD Thread);
+
+// ---- x64 PEB / LDR structures (hand-rolled to avoid ntifs.h version issues) -
+//
+// PEB_LDR_DATA x64 layout:
+//   +0x000 Length                        ULONG
+//   +0x004 Initialized                   UCHAR  (+3 pad)
+//   +0x008 SsHandle                      PVOID
+//   +0x010 InLoadOrderModuleList         LIST_ENTRY
+typedef struct _KDRV_PEB_LDR {
+    ULONG      Length;
+    BYTE       Initialized;
+    BYTE       _pad[3];
+    PVOID      SsHandle;
+    LIST_ENTRY InLoadOrderModuleList;
+} KDRV_PEB_LDR;
+
+// PEB x64 layout (only the fields we touch):
+//   +0x000..+0x017  reserved
+//   +0x018          Ldr   KDRV_PEB_LDR*
+typedef struct _KDRV_PEB {
+    BYTE          _reserved[0x18];
+    KDRV_PEB_LDR *Ldr;
+} KDRV_PEB;
+
+// LDR_DATA_TABLE_ENTRY x64 layout:
+//   +0x000 InLoadOrderLinks              LIST_ENTRY  (16)
+//   +0x010 InMemoryOrderLinks            LIST_ENTRY  (16)
+//   +0x020 InInitializationOrderLinks    LIST_ENTRY  (16)
+//   +0x030 DllBase                       PVOID
+//   +0x038 EntryPoint                    PVOID
+//   +0x040 SizeOfImage                   ULONG
+//   +0x044 Flags                         ULONG
+//   +0x048 FullDllName                   UNICODE_STRING
+//   +0x058 BaseDllName                   UNICODE_STRING
+typedef struct _KDRV_LDR_ENTRY {
+    LIST_ENTRY     InLoadOrderLinks;
+    LIST_ENTRY     InMemoryOrderLinks;
+    LIST_ENTRY     InInitializationOrderLinks;
+    PVOID          DllBase;
+    PVOID          EntryPoint;
+    ULONG          SizeOfImage;
+    ULONG          Flags;
+    UNICODE_STRING FullDllName;
+    UNICODE_STRING BaseDllName;
+} KDRV_LDR_ENTRY;
+
+// -----------------------------------------------------------------------------
 
 #define DEVICE_NAME  L"\\Device\\kdrv"
 #define SYMLINK_NAME L"\\DosDevices\\kdrv"
@@ -18,15 +65,16 @@ typedef NTSTATUS(NTAPI* ZwQueueApcThread_t)(
 
 // Walk 64-bit InLoadOrderModuleList of the attached process.
 // Must be called inside KeStackAttachProcess / KeUnstackDetachProcess.
-static PVOID FindExportAttached(PPEB peb, const WCHAR* dll, const char* fn) {
+static PVOID FindExportAttached(PVOID rawPeb, const WCHAR* dll, const char* fn) {
+    KDRV_PEB* peb = (KDRV_PEB*)rawPeb;
     if (!peb) return NULL;
     __try {
         if (!peb->Ldr) return NULL;
         LIST_ENTRY* head  = &peb->Ldr->InLoadOrderModuleList;
         LIST_ENTRY* entry = head->Flink;
         while (entry && entry != head) {
-            PLDR_DATA_TABLE_ENTRY ldr =
-                CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
+            KDRV_LDR_ENTRY* ldr =
+                CONTAINING_RECORD(entry, KDRV_LDR_ENTRY, InLoadOrderLinks);
             entry = entry->Flink;
             if (!ldr->DllBase || !ldr->BaseDllName.Buffer) continue;
             if (_wcsicmp(ldr->BaseDllName.Buffer, dll) != 0) continue;
@@ -43,9 +91,9 @@ static PVOID FindExportAttached(PPEB peb, const WCHAR* dll, const char* fn) {
 
             PIMAGE_EXPORT_DIRECTORY exp =
                 (PIMAGE_EXPORT_DIRECTORY)((UCHAR*)dos + expRva);
-            PULONG  names  = (PULONG )((UCHAR*)dos + exp->AddressOfNames);
-            PUSHORT ords   = (PUSHORT)((UCHAR*)dos + exp->AddressOfNameOrdinals);
-            PULONG  funcs  = (PULONG )((UCHAR*)dos + exp->AddressOfFunctions);
+            PULONG  names = (PULONG )((UCHAR*)dos + exp->AddressOfNames);
+            PUSHORT ords  = (PUSHORT)((UCHAR*)dos + exp->AddressOfNameOrdinals);
+            PULONG  funcs = (PULONG )((UCHAR*)dos + exp->AddressOfFunctions);
 
             for (ULONG i = 0; i < exp->NumberOfNames; i++) {
                 if (strcmp((const char*)((UCHAR*)dos + names[i]), fn) == 0)
@@ -59,7 +107,7 @@ static PVOID FindExportAttached(PPEB peb, const WCHAR* dll, const char* fn) {
     return NULL;
 }
 
-// ─── Injection logic ──────────────────────────────────────────────
+// ---- Injection logic --------------------------------------------------------
 
 static NTSTATUS InjectDll(const INJECT_REQUEST* req) {
     if (!req->pid || !req->loadLibraryA || !req->dllPath[0])
@@ -73,7 +121,7 @@ static NTSTATUS InjectDll(const INJECT_REQUEST* req) {
     NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)req->pid, &eproc);
     if (!NT_SUCCESS(st)) { DbgPrint("[kdrv] Lookup=0x%X\n", st); return st; }
 
-    // 2. Kernel-mode handle — bypasses ObRegisterCallbacks
+    // 2. Kernel-mode handle -- bypasses ObRegisterCallbacks
     HANDLE hProc = NULL;
     st = ObOpenObjectByPointer(eproc, OBJ_KERNEL_HANDLE, NULL,
                                PROCESS_ALL_ACCESS, *PsProcessType,
@@ -97,20 +145,18 @@ static NTSTATUS InjectDll(const INJECT_REQUEST* req) {
 
     // 4. Attach: write DLL path + find wow64!Wow64ApcRoutine
     //
-    //    We need Wow64ApcRoutine because the target is a 32-bit WoW64 process.
-    //    A kernel-created thread starts in 64-bit mode — calling a 32-bit
-    //    LoadLibraryA address directly would execute x86 code as x86-64 and crash.
-    //    Queueing the APC as: ZwQueueApcThread(thread, Wow64ApcRoutine,
-    //        LoadLibraryA32, dllPathAddr, NULL)
-    //    causes Windows to dispatch: Wow64ApcRoutine(LoadLibraryA32, dllPathAddr, NULL)
-    //    which switches to x86 mode and calls LoadLibraryA32(dllPathAddr).
+    //    Target is a 32-bit WoW64 process.  A kernel APC runs in 64-bit mode;
+    //    we cannot call a 32-bit LoadLibraryA directly.  Instead we queue:
+    //      ZwQueueApcThread(thread, Wow64ApcRoutine, LoadLibraryA32, pathAddr, NULL)
+    //    Wow64ApcRoutine is exported by wow64.dll in every WoW64 process and
+    //    handles the 64->32 mode switch, then calls LoadLibraryA32(pathAddr).
     PVOID      wow64Apc = NULL;
-    PPEB       peb      = PsGetProcessPeb(eproc);
+    PVOID      rawPeb   = PsGetProcessPeb(eproc);
     KAPC_STATE apcState;
     KeStackAttachProcess((PKPROCESS)eproc, &apcState);
     __try {
         RtlCopyMemory(addr, req->dllPath, pathLen);
-        wow64Apc = FindExportAttached(peb, L"wow64.dll", "Wow64ApcRoutine");
+        wow64Apc = FindExportAttached(rawPeb, L"wow64.dll", "Wow64ApcRoutine");
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         st = GetExceptionCode();
         DbgPrint("[kdrv] attach exception: 0x%X\n", st);
@@ -155,14 +201,14 @@ static NTSTATUS InjectDll(const INJECT_REQUEST* req) {
         ts = pQueue(hThr,
                     wow64Apc,
                     (PVOID)(ULONG_PTR)req->loadLibraryA,  // fn32 for Wow64ApcRoutine
-                    addr,                                  // argument for LoadLibraryA
+                    addr,                                  // arg  for LoadLibraryA
                     NULL);
         DbgPrint("[kdrv] ZwQueueApcThread(#%d)=0x%X\n", tried, ts);
         ZwClose(hThr);
 
         if (NT_SUCCESS(ts)) {
             injectSt = STATUS_SUCCESS;
-            ObDereferenceObject(pThread);  // stop early — manual deref required
+            ObDereferenceObject(pThread);  // stop early -- manual deref required
             break;
         }
     }
@@ -173,7 +219,7 @@ static NTSTATUS InjectDll(const INJECT_REQUEST* req) {
     return injectSt;
 }
 
-// ─── IRP dispatch routines ────────────────────────────────────────────
+// ---- IRP dispatch ------------------------------------------------------------
 
 static NTSTATUS DispatchCreateClose(PDEVICE_OBJECT DevObj, PIRP Irp) {
     UNREFERENCED_PARAMETER(DevObj);
@@ -202,7 +248,7 @@ static NTSTATUS DispatchDeviceControl(PDEVICE_OBJECT DevObj, PIRP Irp) {
     return st;
 }
 
-// ─── Driver entry / unload ───────────────────────────────────────────
+// ---- Driver entry / unload --------------------------------------------------
 
 static VOID DriverUnload(PDRIVER_OBJECT DriverObj) {
     UNREFERENCED_PARAMETER(DriverObj);

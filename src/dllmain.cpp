@@ -14,14 +14,6 @@ static void SetupHotkeys() {
     auto& heal  = KO::Features::AutoHeal::Get();
     auto& skill = KO::Features::AutoSkill::Get();
 
-    // F1-F6: serbest (kullanıcı offset doldurunca buraya ekler)
-    hkm.Bind(0, "");  // F1 - boş
-    hkm.Bind(1, "");  // F2 - boş
-    hkm.Bind(2, "");  // F3 - boş
-    hkm.Bind(3, "");  // F4 - boş
-    hkm.Bind(4, "");  // F5 - boş
-    hkm.Bind(5, "");  // F6 - boş
-
     // F7: Bot toggle
     hkm.Bind(6, "Bot", [&bot]() {
         bot.cfg.enabled = !bot.cfg.enabled;
@@ -38,9 +30,6 @@ static void SetupHotkeys() {
     hkm.Bind(8, "AutoSkill", [&skill]() {
         skill.cfg.enabled = !skill.cfg.enabled;
     });
-
-    hkm.Bind(9,  "");  // F10 - boş
-    hkm.Bind(10, "");  // F11 - boş
 
     // F12: çıkış
     hkm.Bind(11, "Cikis", [&]() { g_running = false; });

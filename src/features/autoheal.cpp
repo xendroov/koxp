@@ -12,22 +12,15 @@ int64_t AutoHeal::Now() const {
 }
 
 void AutoHeal::UseHpPot() {
-    // USE_ITEM paketi: opcode + inventory slot
-    int slotBase = Memory::Read<int32_t>(
-        Player::Get().base + Offsets::Player::HpPotItem
-    );
     Packet pkt(Opcode::USE_ITEM);
-    pkt.Write<uint8_t>(static_cast<uint8_t>(slotBase));
+    pkt.Write<uint8_t>(cfg.hpPotSlot);
     SendToServer(pkt);
     lastHpPot_ = Now();
 }
 
 void AutoHeal::UseMpPot() {
-    int slotBase = Memory::Read<int32_t>(
-        Player::Get().base + Offsets::Player::MpPotItem
-    );
     Packet pkt(Opcode::USE_ITEM);
-    pkt.Write<uint8_t>(static_cast<uint8_t>(slotBase));
+    pkt.Write<uint8_t>(cfg.mpPotSlot);
     SendToServer(pkt);
     lastMpPot_ = Now();
 }

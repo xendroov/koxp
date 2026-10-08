@@ -11,11 +11,9 @@ constexpr int HK_COUNT    = 12;
 constexpr int VK_F1_BASE  = VK_F1; // 0x70
 
 struct HotkeySlot {
-    std::string            label;     // UI'de görünen isim
-    std::function<void()>  action;    // basıldığında çalışacak fonksiyon
+    std::string            label;
+    std::function<void()>  action;
     bool                   enabled = true;
-
-    int vkCode() const { return VK_F1_BASE + static_cast<int>(&*this - nullptr); }
 };
 
 class HotkeyManager {

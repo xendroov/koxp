@@ -138,6 +138,9 @@ void Menu::DrawFeaturesPanel() {
         ImGui::SliderFloat("MP Pot %", &heal.cfg.mpThreshold, 10.f, 95.f, "%.0f%%");
         ImGui::SliderInt("HP Gecikme",  &heal.cfg.hpPotDelay, 500, 5000, "%d ms");
         ImGui::SliderInt("MP Gecikme",  &heal.cfg.mpPotDelay, 500, 5000, "%d ms");
+        int hpSlot = heal.cfg.hpPotSlot, mpSlot = heal.cfg.mpPotSlot;
+        if (ImGui::SliderInt("HP Pot Slot", &hpSlot, 0, 20)) heal.cfg.hpPotSlot = (uint8_t)hpSlot;
+        if (ImGui::SliderInt("MP Pot Slot", &mpSlot, 0, 20)) heal.cfg.mpPotSlot = (uint8_t)mpSlot;
         ImGui::Unindent(10.f);
         ImGui::PopID();
 

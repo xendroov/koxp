@@ -4,11 +4,13 @@
 namespace KO::Features {
 
 struct AutoHealConfig {
-    bool  enabled       = true;
-    float hpThreshold   = 70.f;  // HP % altına düşünce pot kullan
-    float mpThreshold   = 40.f;  // MP % altına düşünce pot kullan
-    int   hpPotDelay    = 1500;  // ms
-    int   mpPotDelay    = 1500;
+    bool    enabled      = true;
+    float   hpThreshold  = 70.f;   // HP % altına düşünce pot kullan
+    float   mpThreshold  = 40.f;   // MP % altına düşünce pot kullan
+    int     hpPotDelay   = 1500;   // ms
+    int     mpPotDelay   = 1500;
+    uint8_t hpPotSlot    = 0;      // envanter slot numarası (UI'den ayarla)
+    uint8_t mpPotSlot    = 1;
 };
 
 class AutoHeal {

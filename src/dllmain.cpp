@@ -1,48 +1,65 @@
 #include <Windows.h>
-#include "core/hooks.h"
+#include "core/hotkeys.h"
+#include "ui/d3d9hook.h"
 #include "features/bot.h"
 #include "features/autoheal.h"
 #include "features/autoskill.h"
 
-// Hotkey tanımları
-constexpr int HK_TOGGLE_BOT    = VK_F7;   // F7 — bot aç/kapat
-constexpr int HK_TOGGLE_HEAL   = VK_F8;   // F8 — autoheal aç/kapat
-constexpr int HK_UNLOAD        = VK_F12;  // F12 — DLL'i kaldır
-
 static HMODULE g_hModule = nullptr;
 static bool    g_running  = false;
 
-static DWORD WINAPI MainThread(LPVOID) {
-    // Hooks kur
-    KO::Hooks::Install();
+static void SetupHotkeys() {
+    auto& hkm   = KO::HotkeyManager::Get();
+    auto& bot   = KO::Features::Bot::Get();
+    auto& heal  = KO::Features::AutoHeal::Get();
+    auto& skill = KO::Features::AutoSkill::Get();
 
-    // Varsayılan skill örneği: slot 0, 2 saniyelik cooldown
-    // KO::Features::AutoSkill::Get().cfg.skills.push_back({0, 0x1234, 2000});
+    // F1-F6: serbest (kullanıcı offset doldurunca buraya ekler)
+    hkm.Bind(0, "");  // F1 - boş
+    hkm.Bind(1, "");  // F2 - boş
+    hkm.Bind(2, "");  // F3 - boş
+    hkm.Bind(3, "");  // F4 - boş
+    hkm.Bind(4, "");  // F5 - boş
+    hkm.Bind(5, "");  // F6 - boş
+
+    // F7: Bot toggle
+    hkm.Bind(6, "Bot", [&bot]() {
+        bot.cfg.enabled = !bot.cfg.enabled;
+        if (bot.cfg.enabled) bot.Start();
+        else                 bot.Stop();
+    });
+
+    // F8: AutoHeal toggle
+    hkm.Bind(7, "AutoHeal", [&heal]() {
+        heal.cfg.enabled = !heal.cfg.enabled;
+    });
+
+    // F9: AutoSkill toggle
+    hkm.Bind(8, "AutoSkill", [&skill]() {
+        skill.cfg.enabled = !skill.cfg.enabled;
+    });
+
+    hkm.Bind(9,  "");  // F10 - boş
+    hkm.Bind(10, "");  // F11 - boş
+
+    // F12: çıkış
+    hkm.Bind(11, "Cikis", [&]() { g_running = false; });
+}
+
+static DWORD WINAPI MainThread(LPVOID) {
+    // D3D9 overlay hook kur
+    KO::UI::InstallD3D9Hook();
+
+    SetupHotkeys();
 
     g_running = true;
     while (g_running) {
-        // Hotkey kontrol
-        if (GetAsyncKeyState(HK_TOGGLE_BOT) & 1) {
-            auto& bot = KO::Features::Bot::Get();
-            if (bot.IsRunning()) { bot.Stop(); bot.cfg.enabled = false; }
-            else                 { bot.cfg.enabled = true; bot.Start(); }
-        }
-
-        if (GetAsyncKeyState(HK_TOGGLE_HEAL) & 1)
-            KO::Features::AutoHeal::Get().cfg.enabled ^= true;
-
-        if (GetAsyncKeyState(HK_UNLOAD) & 1) {
-            g_running = false;
-            break;
-        }
-
-        // Bot tick (~100 fps)
+        KO::HotkeyManager::Get().Poll();
         KO::Features::Bot::Get().Tick();
-
         Sleep(10);
     }
 
-    KO::Hooks::Remove();
+    KO::UI::RemoveD3D9Hook();
     FreeLibraryAndExitThread(g_hModule, 0);
     return 0;
 }

@@ -58,7 +58,7 @@ target_compile_definitions(koxp PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(koxp PRIVATE minhook ws2_32 winmm d3d9)
 
 # --- injector.exe ---
-add_executable(injector injector/main.cpp)
+add_executable(injector injector/main.cpp injector/manual_map.cpp)
 target_compile_definitions(injector PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(injector PRIVATE shell32)
 

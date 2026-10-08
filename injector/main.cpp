@@ -3,6 +3,7 @@
 #include <shellapi.h>
 #include <iostream>
 #include <string>
+#include "manual_map.h"
 
 // Yonetici olarak calisip calismadigi kontrol et
 static bool IsAdmin() {
@@ -167,7 +168,13 @@ int main(int argc, char* argv[]) {
 
     std::wcout << L"[+] Process: " << foundName << L" (PID: " << pid << L")\n";
 
-    bool ok = Inject(pid, std::string(full));
+    // Try manual mapper first (bypasses Xigncode3 NtAllocateVirtualMemory hook).
+    // Falls back to classic LoadLibrary inject if manual map fails.
+    bool ok = ManualMap(pid, std::string(full));
+    if (!ok) {
+        std::cout << "[!] ManualMap basarisiz, klasik inject deneniyor...\n";
+        ok = Inject(pid, std::string(full));
+    }
     if (ok) {
         std::cout << "[+] Inject BASARILI!\n";
         std::cout << "[*] Log: C:\\koxp_log.txt\n";

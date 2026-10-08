@@ -15,6 +15,7 @@ private:
 
     void DrawPlayerPanel();
     void DrawFeaturesPanel();
+    void DrawEntityDebugPanel();
     void DrawHotkeyPanel();
     void DrawStatusBar();
 

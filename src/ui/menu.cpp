@@ -180,6 +180,68 @@ void Menu::DrawFeaturesPanel() {
     ImGui::PopStyleColor();
 }
 
+// ---------------------------------------------------- entity debug panel ---
+void Menu::DrawEntityDebugPanel() {
+    auto& em = EntityManager::Get();
+
+    ImGui::PushStyleColor(ImGuiCol_Header, {0.18f, 0.18f, 0.25f, 1.f});
+    if (ImGui::CollapsingHeader("  Entity Debug")) {
+        ImGui::Spacing();
+
+        // Manager layout ayarları
+        auto& pml = em.playerMgrLayout;
+        auto& mml = em.monsterMgrLayout;
+
+        ImGui::Text("Player Manager (FLDB):");
+        ImGui::PushID("pml");
+        ImGui::InputScalar("Array Off", ImGuiDataType_U32, &pml.arrayOffset,
+                           nullptr, nullptr, "0x%08X", ImGuiInputTextFlags_CharsHexadecimal);
+        ImGui::InputScalar("Count Off", ImGuiDataType_U32, &pml.countOffset,
+                           nullptr, nullptr, "0x%08X", ImGuiInputTextFlags_CharsHexadecimal);
+        ImGui::PopID();
+
+        ImGui::Separator();
+        ImGui::Text("Monster Manager (SMMB):");
+        ImGui::PushID("mml");
+        ImGui::InputScalar("Array Off", ImGuiDataType_U32, &mml.arrayOffset,
+                           nullptr, nullptr, "0x%08X", ImGuiInputTextFlags_CharsHexadecimal);
+        ImGui::InputScalar("Count Off", ImGuiDataType_U32, &mml.countOffset,
+                           nullptr, nullptr, "0x%08X", ImGuiInputTextFlags_CharsHexadecimal);
+        ImGui::PopID();
+
+        ImGui::Separator();
+        ImGui::Text("Entities: %d  Players: %d  Monsters: %d",
+            (int)em.All().size(), (int)em.Players().size(), (int)em.Monsters().size());
+
+        if (ImGui::BeginTable("ents", 5,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+            ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingFixedFit,
+            {0, 120}))
+        {
+            ImGui::TableSetupColumn("ID",   0, 50.f);
+            ImGui::TableSetupColumn("Name", 0, 80.f);
+            ImGui::TableSetupColumn("HP",   0, 70.f);
+            ImGui::TableSetupColumn("Race", 0, 40.f);
+            ImGui::TableSetupColumn("Dist", 0, 50.f);
+            ImGui::TableHeadersRow();
+
+            auto& p = Player::Get();
+            for (const auto& e : em.All()) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0); ImGui::Text("%d", e.ID());
+                ImGui::TableSetColumnIndex(1); ImGui::Text("%.12s", e.Name().c_str());
+                ImGui::TableSetColumnIndex(2); ImGui::Text("%d/%d", e.HP(), e.MaxHP());
+                ImGui::TableSetColumnIndex(3); ImGui::Text("%d", e.Race());
+                ImGui::TableSetColumnIndex(4);
+                if (p.Valid()) ImGui::Text("%.0f", e.DistanceTo(p.X(), p.Y()));
+            }
+            ImGui::EndTable();
+        }
+        ImGui::Spacing();
+    }
+    ImGui::PopStyleColor();
+}
+
 // --------------------------------------------------------- hotkey panel ---
 void Menu::DrawHotkeyPanel() {
     auto& hkm = HotkeyManager::Get();
@@ -259,6 +321,7 @@ void Menu::Render() {
 
     DrawPlayerPanel();
     DrawFeaturesPanel();
+    DrawEntityDebugPanel();
     DrawHotkeyPanel();
     DrawStatusBar();
 

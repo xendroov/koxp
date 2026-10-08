@@ -4,8 +4,8 @@
 #include <iostream>
 #include <string>
 #include "manual_map.h"
+#include "../kdrv/kdrv.h"
 
-// Yonetici olarak calisip calismadigi kontrol et
 static bool IsAdmin() {
     BOOL elevated = FALSE;
     HANDLE token = nullptr;
@@ -19,12 +19,10 @@ static bool IsAdmin() {
     return elevated != FALSE;
 }
 
-// Kendi kendini yonetici olarak yeniden baslat (UAC)
 static void RelaunchAsAdmin() {
     char path[MAX_PATH]{};
     GetModuleFileNameA(nullptr, path, MAX_PATH);
 
-    // Komut satirini aktar
     std::string args;
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -69,6 +67,125 @@ static DWORD FindProcessID(const wchar_t* name) {
     return pid;
 }
 
+// ─── Kernel driver injection (bypasses Xigncode3 ObRegisterCallbacks) ─────────────────────
+
+static SC_HANDLE g_hSCM = NULL;
+static SC_HANDLE g_hSvc = NULL;
+
+static bool LoadDriver(const char* sysPath) {
+    g_hSCM = OpenSCManagerA(nullptr, nullptr, SC_MANAGER_ALL_ACCESS);
+    if (!g_hSCM) {
+        std::cout << "[-] OpenSCManager hatasi: " << GetLastError() << "\n";
+        return false;
+    }
+
+    // Onceki cokme kalintisini temizle
+    SC_HANDLE hOld = OpenServiceA(g_hSCM, "kdrv", SERVICE_ALL_ACCESS);
+    if (hOld) {
+        SERVICE_STATUS ss{};
+        ControlService(hOld, SERVICE_CONTROL_STOP, &ss);
+        DeleteService(hOld);
+        CloseServiceHandle(hOld);
+        Sleep(500);
+    }
+
+    g_hSvc = CreateServiceA(g_hSCM, "kdrv", "kdrv",
+        SERVICE_ALL_ACCESS, SERVICE_KERNEL_DRIVER,
+        SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
+        sysPath, nullptr, nullptr, nullptr, nullptr, nullptr);
+
+    if (!g_hSvc) {
+        std::cout << "[-] CreateService hatasi: " << GetLastError() << "\n";
+        CloseServiceHandle(g_hSCM); g_hSCM = nullptr;
+        return false;
+    }
+
+    if (!StartServiceA(g_hSvc, 0, nullptr)) {
+        DWORD err = GetLastError();
+        if (err != ERROR_SERVICE_ALREADY_RUNNING) {
+            std::cout << "[-] StartService hatasi: " << err << "\n";
+            DeleteService(g_hSvc);
+            CloseServiceHandle(g_hSvc); g_hSvc = nullptr;
+            CloseServiceHandle(g_hSCM); g_hSCM = nullptr;
+            return false;
+        }
+    }
+    std::cout << "[+] kdrv.sys yuklendi\n";
+    return true;
+}
+
+static void UnloadDriver() {
+    if (g_hSvc) {
+        SERVICE_STATUS ss{};
+        ControlService(g_hSvc, SERVICE_CONTROL_STOP, &ss);
+        Sleep(300);
+        DeleteService(g_hSvc);
+        CloseServiceHandle(g_hSvc); g_hSvc = nullptr;
+    }
+    if (g_hSCM) {
+        CloseServiceHandle(g_hSCM); g_hSCM = nullptr;
+    }
+    std::cout << "[*] kdrv.sys kaldirildi\n";
+}
+
+static bool KernelInject(DWORD pid, const std::string& dllPath) {
+    // kdrv.sys'i injector.exe ile ayni klasorde ara
+    char exeDir[MAX_PATH]{};
+    GetModuleFileNameA(nullptr, exeDir, MAX_PATH);
+    char* slash = strrchr(exeDir, '\\');
+    if (slash) *(slash + 1) = '\0';
+    std::string sysPath = std::string(exeDir) + "kdrv.sys";
+
+    if (GetFileAttributesA(sysPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        std::cout << "[-] kdrv.sys bulunamadi: " << sysPath << "\n";
+        std::cout << "    -> kdrv.sys ve injector.exe ayni klasorde olmali\n";
+        return false;
+    }
+    std::cout << "[*] kdrv.sys bulundu: " << sysPath << "\n";
+
+    if (!LoadDriver(sysPath.c_str())) return false;
+
+    HANDLE hDev = CreateFileW(L"\\\\.\\kdrv",
+        GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+        OPEN_EXISTING, 0, nullptr);
+    if (hDev == INVALID_HANDLE_VALUE) {
+        std::cout << "[-] \\\\.\\kdrv acilamadi: " << GetLastError() << "\n";
+        UnloadDriver();
+        return false;
+    }
+
+    INJECT_REQUEST req{};
+    req.pid = pid;
+
+    // LoadLibraryA adresi 32-bit surec icin gecerli (ayni boot oturumunda sabittir)
+    HMODULE hK32 = GetModuleHandleA("kernel32.dll");
+    req.loadLibraryA = (unsigned long)(ULONG_PTR)GetProcAddress(hK32, "LoadLibraryA");
+
+    strncpy_s(req.dllPath, sizeof(req.dllPath), dllPath.c_str(), _TRUNCATE);
+
+    std::cout << "[*] IOCTL gonderiliyor: pid=" << pid
+              << " lla=0x" << std::hex << req.loadLibraryA << std::dec
+              << "\n    dll=" << req.dllPath << "\n";
+
+    DWORD bytes = 0;
+    BOOL  ioOk  = DeviceIoControl(hDev, IOCTL_KDRV_INJECT,
+                                  &req, sizeof(req),
+                                  nullptr, 0, &bytes, nullptr);
+    DWORD ioErr = GetLastError();
+
+    CloseHandle(hDev);
+    UnloadDriver();
+
+    if (!ioOk) {
+        std::cout << "[-] DeviceIoControl hatasi: " << ioErr << "\n";
+        return false;
+    }
+    std::cout << "[+] KernelInject BASARILI!\n";
+    return true;
+}
+
+// ─── Classic LoadLibrary inject (fallback) ─────────────────────────────────────────────────────
+
 static bool Inject(DWORD pid, const std::string& dllPath) {
     HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
     if (!hProc) {
@@ -106,7 +223,7 @@ static bool Inject(DWORD pid, const std::string& dllPath) {
         std::cout << "[+] Thread bitti. LoadLibrary sonucu: 0x"
                   << std::hex << exitCode << std::dec << "\n";
         ok = (exitCode != 0);
-        if (!ok) std::cout << "[-] DLL yuklenemedi — DLL ile injector ayni klasorde olmali\n";
+        if (!ok) std::cout << "[-] DLL yuklenemedi\n";
         CloseHandle(hThread);
     } else {
         std::cout << "[-] CreateRemoteThread hatasi: " << GetLastError() << "\n";
@@ -117,16 +234,17 @@ static bool Inject(DWORD pid, const std::string& dllPath) {
     return ok;
 }
 
+// ─── Entry point ──────────────────────────────────────────────────────────────────────────────────────
+
 int main(int argc, char* argv[]) {
     SetConsoleOutputCP(65001);
 
     std::cout << "=== koxp Injector ===\n";
 
-    // Yonetici degil ise kendini UAC ile yeniden baslat
     if (!IsAdmin()) {
         std::cout << "[!] Yonetici yetkisi yok — UAC isteniyor...\n";
         RelaunchAsAdmin();
-        return 0;  // Eski pencere kapanir, yeni pencere yonetici olarak acar
+        return 0;
     }
     std::cout << "[+] Yonetici olarak calisiyor\n";
 
@@ -168,13 +286,21 @@ int main(int argc, char* argv[]) {
 
     std::wcout << L"[+] Process: " << foundName << L" (PID: " << pid << L")\n";
 
-    // Try manual mapper first (bypasses Xigncode3 NtAllocateVirtualMemory hook).
-    // Falls back to classic LoadLibrary inject if manual map fails.
-    bool ok = ManualMap(pid, std::string(full));
+    // 1. Kernel driver inject (Xigncode3 ObRegisterCallbacks'i atiyor)
+    bool ok = KernelInject(pid, std::string(full));
+
+    // 2. Manual mapper (Xigncode NtAllocateVirtualMemory hook'unu atiyor)
+    if (!ok) {
+        std::cout << "[!] KernelInject basarisiz, manual map deneniyor...\n";
+        ok = ManualMap(pid, std::string(full));
+    }
+
+    // 3. Klasik LoadLibrary inject (fallback)
     if (!ok) {
         std::cout << "[!] ManualMap basarisiz, klasik inject deneniyor...\n";
         ok = Inject(pid, std::string(full));
     }
+
     if (ok) {
         std::cout << "[+] Inject BASARILI!\n";
         std::cout << "[*] Log: C:\\koxp_log.txt\n";

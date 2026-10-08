@@ -2,11 +2,19 @@
 #include <ntimage.h>
 #include "kdrv.h"
 
-// ---- manual declarations (not reliably in WDK public headers) ---------------
-PVOID   NTAPI PsGetProcessPeb(PEPROCESS Process);
+#pragma warning(disable: 4013)  /* kernel APIs not declared in this WDK build */
+
+// ---- manual declarations ----------------------------------------------------
+PVOID    NTAPI PsGetProcessPeb(PEPROCESS Process);
 PETHREAD NTAPI PsGetNextProcessThread(PEPROCESS Process, PETHREAD Thread);
 
-// ---- x64 PEB / LDR structures (hand-rolled to avoid ntifs.h version issues) -
+// KAPC_STATE is not exposed by ntddk.h in WDK 10.0.28000.0+.
+// Use an opaque 64-byte buffer; real sizeof(KAPC_STATE) on x64 is 48.
+typedef struct { UCHAR _raw[64]; } KDRV_KAPC_STATE;
+VOID NTAPI KeStackAttachProcess(PKPROCESS Process, KDRV_KAPC_STATE *ApcState);
+VOID NTAPI KeUnstackDetachProcess(KDRV_KAPC_STATE *ApcState);
+
+// ---- x64 PEB / LDR structures -----------------------------------------------
 //
 // PEB_LDR_DATA x64 layout:
 //   +0x000 Length                        ULONG
@@ -15,8 +23,8 @@ PETHREAD NTAPI PsGetNextProcessThread(PEPROCESS Process, PETHREAD Thread);
 //   +0x010 InLoadOrderModuleList         LIST_ENTRY
 typedef struct _KDRV_PEB_LDR {
     ULONG      Length;
-    BYTE       Initialized;
-    BYTE       _pad[3];
+    UCHAR      Initialized;
+    UCHAR      _pad[3];
     PVOID      SsHandle;
     LIST_ENTRY InLoadOrderModuleList;
 } KDRV_PEB_LDR;
@@ -25,7 +33,7 @@ typedef struct _KDRV_PEB_LDR {
 //   +0x000..+0x017  reserved
 //   +0x018          Ldr   KDRV_PEB_LDR*
 typedef struct _KDRV_PEB {
-    BYTE          _reserved[0x18];
+    UCHAR         _reserved[0x18];
     KDRV_PEB_LDR *Ldr;
 } KDRV_PEB;
 
@@ -64,7 +72,6 @@ typedef NTSTATUS(NTAPI* ZwQueueApcThread_t)(
 );
 
 // Walk 64-bit InLoadOrderModuleList of the attached process.
-// Must be called inside KeStackAttachProcess / KeUnstackDetachProcess.
 static PVOID FindExportAttached(PVOID rawPeb, const WCHAR* dll, const char* fn) {
     KDRV_PEB* peb = (KDRV_PEB*)rawPeb;
     if (!peb) return NULL;
@@ -116,12 +123,10 @@ static NTSTATUS InjectDll(const INJECT_REQUEST* req) {
     DbgPrint("[kdrv] InjectDll: pid=%u lla=0x%X dll=%s\n",
              req->pid, req->loadLibraryA, req->dllPath);
 
-    // 1. EPROCESS (ref-counted; keep alive through thread enumeration)
     PEPROCESS eproc = NULL;
     NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)req->pid, &eproc);
     if (!NT_SUCCESS(st)) { DbgPrint("[kdrv] Lookup=0x%X\n", st); return st; }
 
-    // 2. Kernel-mode handle -- bypasses ObRegisterCallbacks
     HANDLE hProc = NULL;
     st = ObOpenObjectByPointer(eproc, OBJ_KERNEL_HANDLE, NULL,
                                PROCESS_ALL_ACCESS, *PsProcessType,
@@ -131,7 +136,6 @@ static NTSTATUS InjectDll(const INJECT_REQUEST* req) {
         ObDereferenceObject(eproc); return st;
     }
 
-    // 3. Allocate RW memory in target for the DLL path string
     SIZE_T pathLen   = strlen(req->dllPath) + 1;
     SIZE_T allocSize = pathLen;
     PVOID  addr      = NULL;
@@ -143,16 +147,10 @@ static NTSTATUS InjectDll(const INJECT_REQUEST* req) {
     }
     DbgPrint("[kdrv] path buf @ %p\n", addr);
 
-    // 4. Attach: write DLL path + find wow64!Wow64ApcRoutine
-    //
-    //    Target is a 32-bit WoW64 process.  A kernel APC runs in 64-bit mode;
-    //    we cannot call a 32-bit LoadLibraryA directly.  Instead we queue:
-    //      ZwQueueApcThread(thread, Wow64ApcRoutine, LoadLibraryA32, pathAddr, NULL)
-    //    Wow64ApcRoutine is exported by wow64.dll in every WoW64 process and
-    //    handles the 64->32 mode switch, then calls LoadLibraryA32(pathAddr).
-    PVOID      wow64Apc = NULL;
-    PVOID      rawPeb   = PsGetProcessPeb(eproc);
-    KAPC_STATE apcState;
+    PVOID           wow64Apc = NULL;
+    PVOID           rawPeb   = PsGetProcessPeb(eproc);
+    KDRV_KAPC_STATE apcState;
+    RtlZeroMemory(&apcState, sizeof(apcState));
     KeStackAttachProcess((PKPROCESS)eproc, &apcState);
     __try {
         RtlCopyMemory(addr, req->dllPath, pathLen);
@@ -171,7 +169,6 @@ static NTSTATUS InjectDll(const INJECT_REQUEST* req) {
         return !NT_SUCCESS(st) ? st : STATUS_NOT_FOUND;
     }
 
-    // 5. Resolve ZwQueueApcThread at runtime
     UNICODE_STRING fnQ;
     RtlInitUnicodeString(&fnQ, L"ZwQueueApcThread");
     ZwQueueApcThread_t pQueue =
@@ -183,7 +180,6 @@ static NTSTATUS InjectDll(const INJECT_REQUEST* req) {
         return STATUS_NOT_FOUND;
     }
 
-    // 6. Enumerate threads; queue WoW64-safe APC to first that accepts
     NTSTATUS injectSt = STATUS_NOT_FOUND;
     PETHREAD pThread  = NULL;
     int      tried    = 0;
@@ -200,15 +196,15 @@ static NTSTATUS InjectDll(const INJECT_REQUEST* req) {
 
         ts = pQueue(hThr,
                     wow64Apc,
-                    (PVOID)(ULONG_PTR)req->loadLibraryA,  // fn32 for Wow64ApcRoutine
-                    addr,                                  // arg  for LoadLibraryA
+                    (PVOID)(ULONG_PTR)req->loadLibraryA,
+                    addr,
                     NULL);
         DbgPrint("[kdrv] ZwQueueApcThread(#%d)=0x%X\n", tried, ts);
         ZwClose(hThr);
 
         if (NT_SUCCESS(ts)) {
             injectSt = STATUS_SUCCESS;
-            ObDereferenceObject(pThread);  // stop early -- manual deref required
+            ObDereferenceObject(pThread);
             break;
         }
     }

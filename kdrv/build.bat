@@ -56,11 +56,7 @@ if exist kdrv.sys del kdrv.sys
 
 echo.
 echo [*] Derleniyor: kdrv.c ...
-cl /nologo /GS- /EHa- /W3 /Od /c ^
-  /D_AMD64_ /DAMD64 /D_WIN64 /DWINNT ^
-  /DNTDDI_VERSION=0x0A000000 /D_WIN32_WINNT=0x0A00 ^
-  /I "!WDK_INC!\km" /I "!WDK_INC!\shared" ^
-  /TC kdrv.c /Fo kdrv.obj
+cl /nologo /GS- /EHa- /W3 /Od /c /D_AMD64_ /DAMD64 /D_WIN64 /DWINNT /DNTDDI_VERSION=0x0A00000C /D_WIN32_WINNT=0x0A00 /I "!WDK_INC!\km" /I "!WDK_INC!\shared" /TC kdrv.c /Fokdrv.obj
 if errorlevel 1 (
     echo [-] Derleme BASARISIZ!
     pause & exit /b 1
@@ -68,10 +64,7 @@ if errorlevel 1 (
 
 echo.
 echo [*] Linkleniyor: kdrv.sys ...
-link /nologo /DRIVER /SUBSYSTEM:NATIVE /ENTRY:DriverEntry /NODEFAULTLIB ^
-  /LIBPATH:"!WDK_LIB!" /OUT:kdrv.sys /MERGE:.rdata=.text ^
-  /IGNORE:4210 /IGNORE:4078 ^
-  kdrv.obj ntoskrnl.lib hal.lib
+link /nologo /DRIVER /SUBSYSTEM:NATIVE /ENTRY:DriverEntry /NODEFAULTLIB /LIBPATH:"!WDK_LIB!" /OUTkdrv.sys /MERGE:.rdata=.text /IGNORE:4210 /IGNORE:4078 kdrv.obj ntoskrnl.lib hal.lib
 if errorlevel 1 (
     echo [-] Link BASARISIZ!
     pause & exit /b 1

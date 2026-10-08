@@ -10,7 +10,7 @@
     <ProjectGuid>{E8D3D3C8-7A01-4B2F-9C3E-A1234567BCDE}</ProjectGuid>
     <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
     <MinimumVisualStudioVersion>14.0</MinimumVisualStudioVersion>
-    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.28000.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
@@ -35,16 +35,15 @@
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>_AMD64_;AMD64;_WIN64;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <DisableSpecificWarnings>4100;4201;%(DisableSpecificWarnings)</DisableSpecificWarnings>
-      <!-- Explicit WDK km include path (fallback if toolset auto-detect fails) -->
       <AdditionalIncludeDirectories>
-        $(KitDir)Include\$(TargetPlatformVersion)\km;
-        $(KitDir)Include\$(TargetPlatformVersion)\shared;
+        $(KitDir)Include\10.0.28000.0\km;
+        $(KitDir)Include\10.0.28000.0\shared;
         %(AdditionalIncludeDirectories)
       </AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <AdditionalLibraryDirectories>
-        $(KitDir)Lib\$(TargetPlatformVersion)\km\x64;
+        $(KitDir)Lib\10.0.28000.0\km\x64;
         %(AdditionalLibraryDirectories)
       </AdditionalLibraryDirectories>
       <AdditionalDependencies>ntoskrnl.lib;hal.lib;%(AdditionalDependencies)</AdditionalDependencies>

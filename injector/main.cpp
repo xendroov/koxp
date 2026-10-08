@@ -155,7 +155,7 @@ static bool KernelInject(DWORD pid, const std::string& dllPath) {
             GENERIC_READ | GENERIC_WRITE, 0, nullptr,
             OPEN_EXISTING, 0, nullptr);
     } else {
-        std::cout << "[+] kdrv zaten yukl\u00fc (preloaded mod)\n";
+        std::cout << "[+] kdrv zaten yuklu (preloaded mod)\n";
     }
 
     if (hDev == INVALID_HANDLE_VALUE) {
@@ -194,7 +194,7 @@ static bool KernelInject(DWORD pid, const std::string& dllPath) {
     return true;
 }
 
-// ─── Classic LoadLibrary inject (fallback) ─────────────────────────────────
+// ─── Classic LoadLibrary inject (fallback) ────────────────────────────
 
 static bool Inject(DWORD pid, const std::string& dllPath) {
     HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
@@ -244,7 +244,7 @@ static bool Inject(DWORD pid, const std::string& dllPath) {
     return ok;
 }
 
-// ─── Entry point ──────────────────────────────────────────────────────────
+// ─── Entry point ─────────────────────────────────────────────────────
 
 int main(int argc, char* argv[]) {
     SetConsoleOutputCP(65001);
@@ -252,7 +252,7 @@ int main(int argc, char* argv[]) {
     std::cout << "=== koxp Injector ===\n";
 
     if (!IsAdmin()) {
-        std::cout << "[!] Yonetici yetkisi yok \u2014 UAC isteniyor...\n";
+        std::cout << "[!] Yonetici yetkisi yok — UAC isteniyor...\n";
         RelaunchAsAdmin();
         return 0;
     }
@@ -285,7 +285,7 @@ int main(int argc, char* argv[]) {
         if (sl) *(sl + 1) = '\0';
         std::string sysPath = std::string(exeDir) + "kdrv.sys";
 
-        std::cout << "[*] Preload modu \u2014 kdrv.sys oyun acilmadan yukleniyor...\n";
+        std::cout << "[*] Preload modu — kdrv.sys oyun acilmadan yukleniyor...\n";
         if (!LoadDriver(sysPath.c_str())) {
             std::cout << "[-] Preload basarisiz.\n";
             system("pause"); return 1;
@@ -294,7 +294,7 @@ int main(int argc, char* argv[]) {
         if (g_hSvc) { CloseServiceHandle(g_hSvc); g_hSvc = nullptr; }
         if (g_hSCM) { CloseServiceHandle(g_hSCM); g_hSCM = nullptr; }
         std::cout << "[+] kdrv.sys aktif!\n";
-        std::cout << "[*] Simdi KnightOnline.exe'yi baslatin.\n";
+        std::cout << "[*] Simdi KnightOnline.exe'yi baslatın.\n";
         std::cout << "[*] Oyun acildiktan sonra bu injector'i tekrar calistirin.\n";
         system("pause"); return 0;
     }

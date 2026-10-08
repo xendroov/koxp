@@ -55,7 +55,7 @@ static PVOID FindExportAttached(PPEB peb, const WCHAR* dll, const char* fn) {
     return NULL;
 }
 
-// ─── Injection logic ───────────────────────────────────────────────────
+// ─── Injection logic ──────────────────────────────────────────────
 
 static NTSTATUS InjectDll(const INJECT_REQUEST* req) {
     if (!req->pid || !req->loadLibraryA || !req->dllPath[0])
@@ -93,13 +93,13 @@ static NTSTATUS InjectDll(const INJECT_REQUEST* req) {
 
     // 4. Attach: write DLL path + find wow64!Wow64ApcRoutine
     //
-    //    Target is a 32-bit WoW64 process.  A kernel-created thread starts
-    //    in 64-bit mode, so passing a 32-bit LoadLibraryA address directly
-    //    to ZwCreateThreadEx would execute x86 opcodes as x86-64 and crash.
-    //    Instead we queue a user APC as:
-    //      ZwQueueApcThread(thread, Wow64ApcRoutine, LoadLibraryA32, pathAddr, NULL)
-    //    Windows then calls Wow64ApcRoutine(LoadLibraryA32, pathAddr, NULL),
-    //    which switches to x86 mode and calls LoadLibraryA32(pathAddr).
+    //    We need Wow64ApcRoutine because the target is a 32-bit WoW64 process.
+    //    A kernel-created thread starts in 64-bit mode — calling a 32-bit
+    //    LoadLibraryA address directly would execute x86 code as x86-64 and crash.
+    //    Queueing the APC as: ZwQueueApcThread(thread, Wow64ApcRoutine,
+    //        LoadLibraryA32, dllPathAddr, NULL)
+    //    causes Windows to dispatch: Wow64ApcRoutine(LoadLibraryA32, dllPathAddr, NULL)
+    //    which switches to x86 mode and calls LoadLibraryA32(dllPathAddr).
     PVOID      wow64Apc = NULL;
     PPEB       peb      = PsGetProcessPeb(eproc);
     KAPC_STATE apcState;
@@ -169,7 +169,7 @@ static NTSTATUS InjectDll(const INJECT_REQUEST* req) {
     return injectSt;
 }
 
-// ─── IRP dispatch routines ────────────────────────────────────────────────
+// ─── IRP dispatch routines ────────────────────────────────────────────
 
 static NTSTATUS DispatchCreateClose(PDEVICE_OBJECT DevObj, PIRP Irp) {
     UNREFERENCED_PARAMETER(DevObj);
@@ -198,7 +198,7 @@ static NTSTATUS DispatchDeviceControl(PDEVICE_OBJECT DevObj, PIRP Irp) {
     return st;
 }
 
-// ─── Driver entry / unload ───────────────────────────────────────────────
+// ─── Driver entry / unload ───────────────────────────────────────────
 
 static VOID DriverUnload(PDRIVER_OBJECT DriverObj) {
     UNREFERENCED_PARAMETER(DriverObj);

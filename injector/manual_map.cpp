@@ -6,7 +6,7 @@
 #include <vector>
 #include <string>
 
-// ─── NT native API typedefs ───────────────────────────────────────────────────
+// ─── NT native API typedefs ─────────────────────────────────────────────
 
 using NtCreateSection_t = NTSTATUS(NTAPI*)(
     PHANDLE, ACCESS_MASK, PVOID, PLARGE_INTEGER, ULONG, ULONG, HANDLE);
@@ -35,7 +35,7 @@ static bool LoadNtFns() {
     return pNtCreateSection && pNtMapViewOfSection && pNtUnmapViewOfSection && pNtCreateThreadEx;
 }
 
-// ─── Shellcode (x86) ─────────────────────────────────────────────────────────
+// ─── Shellcode (x86) ──────────────────────────────────────────────────
 // Called as DWORD WINAPI shell(LPVOID param)  where param = &ShellData in target
 // Calls: DllMain(base, DLL_PROCESS_ATTACH, NULL)
 
@@ -73,7 +73,7 @@ static BYTE s_shell[] = {
     0xC2, 0x04, 0x00
 };
 
-// ─── PE helpers ──────────────────────────────────────────────────────────────
+// ─── PE helpers ────────────────────────────────────────────────────────
 
 static IMAGE_NT_HEADERS* GetNtHdrs(BYTE* base) {
     auto* dos = (IMAGE_DOS_HEADER*)base;
@@ -143,7 +143,7 @@ static bool ResolveImports(BYTE* localBase) {
     return true;
 }
 
-// ─── ManualMap ───────────────────────────────────────────────────────────────
+// ─── ManualMap ────────────────────────────────────────────────────────────
 
 bool ManualMap(DWORD pid, const std::string& dllPath) {
     std::cout << "[*] Manual mapper starting (NtCreateSection method)\n";
@@ -178,7 +178,7 @@ bool ManualMap(DWORD pid, const std::string& dllPath) {
         return false;
     }
 
-    // ── 1. Create anonymous shared section ────────────────────────────────────
+    // ── 1. Create anonymous shared section ───────────────────────────────────────
     LARGE_INTEGER secSz{}; secSz.QuadPart = imageSize;
     HANDLE hSec = nullptr;
     NTSTATUS st = pNtCreateSection(&hSec, SECTION_ALL_ACCESS, nullptr,
@@ -211,7 +211,7 @@ bool ManualMap(DWORD pid, const std::string& dllPath) {
     }
     std::cout << "[+] Remote view: 0x" << std::hex << (DWORD)remoteView << std::dec << "\n";
 
-    // ── 4. Copy PE headers + sections into local view ─────────────────────────
+    // ── 4. Copy PE headers + sections into local view ──────────────────────────
     memcpy(localView, rawBase, nt->OptionalHeader.SizeOfHeaders);
     auto* sec = IMAGE_FIRST_SECTION(nt);
     for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
@@ -223,11 +223,11 @@ bool ManualMap(DWORD pid, const std::string& dllPath) {
     }
     std::cout << "[+] " << nt->FileHeader.NumberOfSections << " sections copied\n";
 
-    // ── 5. Fix relocations (based on actual remote address) ───────────────────
+    // ── 5. Fix relocations (based on actual remote address) ─────────────────────
     ApplyRelocations((BYTE*)localView, prefBase, (DWORD)remoteView);
     std::cout << "[+] Relocations applied\n";
 
-    // ── 6. Resolve imports in local view (shared → visible in remote) ─────────
+    // ── 6. Resolve imports in local view (shared → visible in remote) ──────────
     if (!ResolveImports((BYTE*)localView)) {
         pNtUnmapViewOfSection(GetCurrentProcess(), localView);
         pNtUnmapViewOfSection(hProc, remoteView);
@@ -256,7 +256,7 @@ bool ManualMap(DWORD pid, const std::string& dllPath) {
     WriteProcessMemory(hProc, sdAddr,   &sd,       sizeof(sd),        nullptr);
     std::cout << "[+] Shellcode written at 0x" << std::hex << (DWORD)shellMem << std::dec << "\n";
 
-    // ── 8. Create remote thread via NtCreateThreadEx ──────────────────────────
+    // ── 8. Create remote thread via NtCreateThreadEx ─────────────────────────
     HANDLE hThread = nullptr;
     st = pNtCreateThreadEx(&hThread, THREAD_ALL_ACCESS, nullptr, hProc,
                            shellMem, sdAddr, 0, 0, 0, 0, nullptr);

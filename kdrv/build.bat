@@ -1,8 +1,11 @@
 @echo off
 setlocal enabledelayedexpansion
 
+rem ProgramFiles(x86) icin: en uste set et, parantez icinde sorun cikmassin
+set "PF86=%ProgramFiles(x86)%"
+
 rem ── WDK: ntddk.h olan en yeni surumu bul ──────────────────────────────────
-set "WDK_BASE=C:\Program Files (x86)\Windows Kits\10"
+set "WDK_BASE=!PF86!\Windows Kits\10"
 set "WDK_INC="
 set "WDK_LIB="
 
@@ -13,7 +16,7 @@ for /f "tokens=*" %%v in ('dir /b /od "!WDK_BASE!\Include" 2^>nul') do (
     )
 )
 if "!WDK_INC!"=="" (
-    echo [-] ntddk.h bulunamadi.  WDK kurulu mu?
+    echo [-] ntddk.h bulunamadi. WDK kurulu mu?
     echo     Beklenen: !WDK_BASE!\Include\^<versiyon^>\km\ntddk.h
     pause & exit /b 1
 )
@@ -21,7 +24,6 @@ echo [+] WDK   : !WDK_INC!
 echo [+] WDKLib: !WDK_LIB!
 
 rem ── Visual Studio: cl.exe'yi vswhere ile bul ──────────────────────────────
-for /f "tokens=*" %%i in ('echo %ProgramFiles^(x86^)%') do set "PF86=%%i"
 set "VSWHERE=!PF86!\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "!VSWHERE!" (
     echo [-] vswhere.exe bulunamadi: !VSWHERE!

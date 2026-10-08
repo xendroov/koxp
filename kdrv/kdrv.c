@@ -1,6 +1,10 @@
 #include <ntifs.h>
-#include <wdm.h>
+#include <ntimage.h>
 #include "kdrv.h"
+
+// Not declared in all WDK public header versions — declare manually
+PPEB    NTAPI PsGetProcessPeb(PEPROCESS Process);
+PETHREAD NTAPI PsGetNextProcessThread(PEPROCESS Process, PETHREAD Thread);
 
 #define DEVICE_NAME  L"\\Device\\kdrv"
 #define SYMLINK_NAME L"\\DosDevices\\kdrv"

@@ -60,3 +60,11 @@ target_link_libraries(koxp PRIVATE minhook ws2_32 winmm d3d9)
 # --- injector.exe ---
 add_executable(injector injector/main.cpp)
 target_compile_definitions(injector PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(injector PRIVATE shell32)
+
+# Manifest: her zaman yonetici olarak calis (UAC)
+if(MSVC)
+    set_target_properties(injector PROPERTIES
+        LINK_FLAGS "/MANIFESTUAC:\"level='requireAdministrator' uiAccess='false'\""
+    )
+endif()

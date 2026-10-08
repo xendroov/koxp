@@ -3,6 +3,56 @@
 #include <iostream>
 #include <string>
 
+// Yonetici olarak calisip calismadigi kontrol et
+static bool IsAdmin() {
+    BOOL elevated = FALSE;
+    HANDLE token = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        TOKEN_ELEVATION te{};
+        DWORD sz = sizeof(te);
+        if (GetTokenInformation(token, TokenElevation, &te, sizeof(te), &sz))
+            elevated = te.TokenIsElevated;
+        CloseHandle(token);
+    }
+    return elevated != FALSE;
+}
+
+// Kendi kendini yonetici olarak yeniden baslat (UAC)
+static void RelaunchAsAdmin() {
+    char path[MAX_PATH]{};
+    GetModuleFileNameA(nullptr, path, MAX_PATH);
+
+    // Komut satirini aktar
+    std::string args;
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    for (int i = 1; i < argc; ++i) {
+        int len = WideCharToMultiByte(CP_ACP, 0, argv[i], -1, nullptr, 0, nullptr, nullptr);
+        std::string s(len, '\0');
+        WideCharToMultiByte(CP_ACP, 0, argv[i], -1, s.data(), len, nullptr, nullptr);
+        if (i > 1) args += " ";
+        args += "\"" + s + "\"";
+    }
+    LocalFree(argv);
+
+    std::cout << "[*] Yonetici izni isteniyor (UAC)...\n";
+
+    SHELLEXECUTEINFOA sei{};
+    sei.cbSize       = sizeof(sei);
+    sei.lpVerb       = "runas";
+    sei.lpFile       = path;
+    sei.lpParameters = args.c_str();
+    sei.nShow        = SW_SHOWNORMAL;
+
+    if (!ShellExecuteExA(&sei)) {
+        DWORD err = GetLastError();
+        if (err == ERROR_CANCELLED)
+            std::cout << "[-] UAC iptal edildi.\n";
+        else
+            std::cout << "[-] ShellExecuteEx hatasi: " << err << "\n";
+    }
+}
+
 static DWORD FindProcessID(const wchar_t* name) {
     DWORD pid = 0;
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -20,14 +70,20 @@ static DWORD FindProcessID(const wchar_t* name) {
 static bool Inject(DWORD pid, const std::string& dllPath) {
     HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
     if (!hProc) {
-        std::cout << "[-] OpenProcess hatasi: " << GetLastError() << "\n";
+        DWORD err = GetLastError();
+        std::cout << "[-] OpenProcess hatasi: " << err;
+        if (err == 5) std::cout << " (ACCESS DENIED - injector yonetici degil!)";
+        std::cout << "\n";
         return false;
     }
 
     void* mem = VirtualAllocEx(hProc, nullptr, dllPath.size() + 1,
                                MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!mem) {
-        std::cout << "[-] VirtualAllocEx hatasi: " << GetLastError() << "\n";
+        DWORD err = GetLastError();
+        std::cout << "[-] VirtualAllocEx hatasi: " << err;
+        if (err == 5) std::cout << " (ACCESS DENIED)";
+        std::cout << "\n";
         CloseHandle(hProc);
         return false;
     }
@@ -45,9 +101,10 @@ static bool Inject(DWORD pid, const std::string& dllPath) {
         WaitForSingleObject(hThread, 8000);
         DWORD exitCode = 0;
         GetExitCodeThread(hThread, &exitCode);
-        std::cout << "[+] Thread bitti. LoadLibrary sonucu: 0x" << std::hex << exitCode << std::dec << "\n";
+        std::cout << "[+] Thread bitti. LoadLibrary sonucu: 0x"
+                  << std::hex << exitCode << std::dec << "\n";
         ok = (exitCode != 0);
-        if (!ok) std::cout << "[-] DLL yuklenemedi (0 dondu)\n";
+        if (!ok) std::cout << "[-] DLL yuklenemedi — DLL ile injector ayni klasorde olmali\n";
         CloseHandle(hThread);
     } else {
         std::cout << "[-] CreateRemoteThread hatasi: " << GetLastError() << "\n";
@@ -61,10 +118,19 @@ static bool Inject(DWORD pid, const std::string& dllPath) {
 int main(int argc, char* argv[]) {
     SetConsoleOutputCP(65001);
 
-    // KO 2626 olasi exe isimleri
+    std::cout << "=== koxp Injector ===\n";
+
+    // Yonetici degil ise kendini UAC ile yeniden baslat
+    if (!IsAdmin()) {
+        std::cout << "[!] Yonetici yetkisi yok — UAC isteniyor...\n";
+        RelaunchAsAdmin();
+        return 0;  // Eski pencere kapanir, yeni pencere yonetici olarak acar
+    }
+    std::cout << "[+] Yonetici olarak calisiyor\n";
+
     const wchar_t* candidates[] = {
-        L"KnightOnLine.exe",
         L"KnightOnline.exe",
+        L"KnightOnLine.exe",
         L"Knight.exe",
         L"ko.exe",
         L"KO.exe",
@@ -75,19 +141,15 @@ int main(int argc, char* argv[]) {
 
     char full[MAX_PATH]{};
     GetFullPathNameA(dllPath.c_str(), MAX_PATH, full, nullptr);
+    std::cout << "[*] DLL: " << full << "\n";
 
-    std::cout << "=== koxp Injector ===\n";
-    std::cout << "[*] DLL yolu: " << full << "\n";
-
-    // DLL var mi?
     if (GetFileAttributesA(full) == INVALID_FILE_ATTRIBUTES) {
-        std::cout << "[-] DLL bulunamadi: " << full << "\n";
-        std::cout << "    -> injector.exe ile koxp.dll ayni klasorde olmali!\n";
+        std::cout << "[-] koxp.dll bulunamadi!\n";
+        std::cout << "    -> injector.exe ve koxp.dll ayni klasorde olmali\n";
         system("pause");
         return 1;
     }
 
-    // Process bul
     DWORD pid = 0;
     const wchar_t* foundName = nullptr;
     for (auto name : candidates) {
@@ -96,24 +158,20 @@ int main(int argc, char* argv[]) {
     }
 
     if (!pid) {
-        std::cout << "[-] Knight Online process bulunamadi!\n";
-        std::cout << "    Aranan isimler: KnightOnLine.exe, KnightOnline.exe, Knight.exe, ko.exe\n";
-        std::cout << "\n[!] Gorev Yoneticisi'nden (Ctrl+Shift+Esc) KO'nun exe adini kontrol et.\n";
+        std::cout << "[-] Knight Online sureci bulunamadi!\n";
+        std::cout << "    Aranan: KnightOnline.exe / KnightOnLine.exe / Knight.exe\n";
         system("pause");
         return 1;
     }
 
-    std::wcout << L"[+] Process bulundu: " << foundName << L" (PID: " << pid << L")\n";
+    std::wcout << L"[+] Process: " << foundName << L" (PID: " << pid << L")\n";
 
     bool ok = Inject(pid, std::string(full));
     if (ok) {
-        std::cout << "[+] Inject basarili!\n";
-        std::cout << "[*] Log dosyasi: C:\\koxp_log.txt\n";
-        std::cout << "[*] Overlay gozukmuyorsa logu kontrol et.\n";
+        std::cout << "[+] Inject BASARILI!\n";
+        std::cout << "[*] Log: C:\\koxp_log.txt\n";
     } else {
-        std::cout << "[-] Inject basarisiz.\n";
-        std::cout << "    -> x86-Release build kullandığına emin ol\n";
-        std::cout << "    -> Yonetici olarak calistir (sag tik → Yönetici)\n";
+        std::cout << "[-] Inject BASARISIZ.\n";
     }
 
     system("pause");

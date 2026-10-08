@@ -5,24 +5,57 @@
 #define DEVICE_NAME  L"\\Device\\kdrv"
 #define SYMLINK_NAME L"\\DosDevices\\kdrv"
 
-// ZwCreateThreadEx is exported from ntoskrnl but not in public WDK headers
-typedef NTSTATUS(NTAPI* ZwCreateThreadEx_t)(
-    PHANDLE            ThreadHandle,
-    ACCESS_MASK        DesiredAccess,
-    POBJECT_ATTRIBUTES ObjectAttributes,
-    HANDLE             ProcessHandle,
-    PVOID              StartRoutine,
-    PVOID              Argument,
-    ULONG              CreateFlags,
-    ULONG_PTR          ZeroBits,
-    SIZE_T             StackSize,
-    SIZE_T             MaximumStackSize,
-    PVOID              AttributeList
-);
-
 static PDEVICE_OBJECT g_Device = NULL;
 
-// ─── Injection logic ──────────────────────────────────────────────────────────────────────────────────
+typedef NTSTATUS(NTAPI* ZwQueueApcThread_t)(
+    HANDLE ThreadHandle, PVOID ApcRoutine,
+    PVOID ApcArgument1, PVOID ApcArgument2, PVOID ApcArgument3
+);
+
+// Walk 64-bit InLoadOrderModuleList of the attached process.
+// Must be called inside KeStackAttachProcess / KeUnstackDetachProcess.
+static PVOID FindExportAttached(PPEB peb, const WCHAR* dll, const char* fn) {
+    if (!peb) return NULL;
+    __try {
+        if (!peb->Ldr) return NULL;
+        LIST_ENTRY* head  = &peb->Ldr->InLoadOrderModuleList;
+        LIST_ENTRY* entry = head->Flink;
+        while (entry && entry != head) {
+            PLDR_DATA_TABLE_ENTRY ldr =
+                CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
+            entry = entry->Flink;
+            if (!ldr->DllBase || !ldr->BaseDllName.Buffer) continue;
+            if (_wcsicmp(ldr->BaseDllName.Buffer, dll) != 0) continue;
+
+            PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)ldr->DllBase;
+            if (dos->e_magic != IMAGE_DOS_SIGNATURE) return NULL;
+            PIMAGE_NT_HEADERS64 nt =
+                (PIMAGE_NT_HEADERS64)((UCHAR*)dos + dos->e_lfanew);
+            if (nt->Signature != IMAGE_NT_SIGNATURE) return NULL;
+
+            ULONG expRva = nt->OptionalHeader
+                .DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT].VirtualAddress;
+            if (!expRva) return NULL;
+
+            PIMAGE_EXPORT_DIRECTORY exp =
+                (PIMAGE_EXPORT_DIRECTORY)((UCHAR*)dos + expRva);
+            PULONG  names  = (PULONG )((UCHAR*)dos + exp->AddressOfNames);
+            PUSHORT ords   = (PUSHORT)((UCHAR*)dos + exp->AddressOfNameOrdinals);
+            PULONG  funcs  = (PULONG )((UCHAR*)dos + exp->AddressOfFunctions);
+
+            for (ULONG i = 0; i < exp->NumberOfNames; i++) {
+                if (strcmp((const char*)((UCHAR*)dos + names[i]), fn) == 0)
+                    return (PVOID)((UCHAR*)dos + funcs[ords[i]]);
+            }
+            return NULL;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        DbgPrint("[kdrv] FindExportAttached exception: 0x%X\n", GetExceptionCode());
+    }
+    return NULL;
+}
+
+// ─── Injection logic ───────────────────────────────────────────────────
 
 static NTSTATUS InjectDll(const INJECT_REQUEST* req) {
     if (!req->pid || !req->loadLibraryA || !req->dllPath[0])
@@ -31,85 +64,112 @@ static NTSTATUS InjectDll(const INJECT_REQUEST* req) {
     DbgPrint("[kdrv] InjectDll: pid=%u lla=0x%X dll=%s\n",
              req->pid, req->loadLibraryA, req->dllPath);
 
-    // 1. Find EPROCESS for target PID
+    // 1. EPROCESS (ref-counted; keep alive through thread enumeration)
     PEPROCESS eproc = NULL;
     NTSTATUS st = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)req->pid, &eproc);
-    if (!NT_SUCCESS(st)) {
-        DbgPrint("[kdrv] PsLookupProcessByProcessId = 0x%X\n", st);
-        return st;
-    }
+    if (!NT_SUCCESS(st)) { DbgPrint("[kdrv] Lookup=0x%X\n", st); return st; }
 
-    // 2. Open kernel handle to target process (bypasses ObRegisterCallbacks)
+    // 2. Kernel-mode handle — bypasses ObRegisterCallbacks
     HANDLE hProc = NULL;
     st = ObOpenObjectByPointer(eproc, OBJ_KERNEL_HANDLE, NULL,
                                PROCESS_ALL_ACCESS, *PsProcessType,
                                KernelMode, &hProc);
     if (!NT_SUCCESS(st)) {
-        DbgPrint("[kdrv] ObOpenObjectByPointer = 0x%X\n", st);
-        ObDereferenceObject(eproc);
-        return st;
+        DbgPrint("[kdrv] ObOpen(proc)=0x%X\n", st);
+        ObDereferenceObject(eproc); return st;
     }
 
-    // 3. Allocate memory in target process for the DLL path string
+    // 3. Allocate RW memory in target for the DLL path string
     SIZE_T pathLen   = strlen(req->dllPath) + 1;
     SIZE_T allocSize = pathLen;
     PVOID  addr      = NULL;
     st = ZwAllocateVirtualMemory(hProc, &addr, 0, &allocSize,
                                  MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!NT_SUCCESS(st)) {
-        DbgPrint("[kdrv] ZwAllocateVirtualMemory = 0x%X\n", st);
-        ObDereferenceObject(eproc);
-        ZwClose(hProc);
-        return st;
+        DbgPrint("[kdrv] ZwAllocVirt=0x%X\n", st);
+        ZwClose(hProc); ObDereferenceObject(eproc); return st;
     }
-    DbgPrint("[kdrv] Path buffer allocated at %p\n", addr);
+    DbgPrint("[kdrv] path buf @ %p\n", addr);
 
-    // 4. Write DLL path into target by temporarily attaching to its address space
+    // 4. Attach: write DLL path + find wow64!Wow64ApcRoutine
+    //
+    //    Target is a 32-bit WoW64 process.  A kernel-created thread starts
+    //    in 64-bit mode, so passing a 32-bit LoadLibraryA address directly
+    //    to ZwCreateThreadEx would execute x86 opcodes as x86-64 and crash.
+    //    Instead we queue a user APC as:
+    //      ZwQueueApcThread(thread, Wow64ApcRoutine, LoadLibraryA32, pathAddr, NULL)
+    //    Windows then calls Wow64ApcRoutine(LoadLibraryA32, pathAddr, NULL),
+    //    which switches to x86 mode and calls LoadLibraryA32(pathAddr).
+    PVOID      wow64Apc = NULL;
+    PPEB       peb      = PsGetProcessPeb(eproc);
     KAPC_STATE apcState;
     KeStackAttachProcess((PKPROCESS)eproc, &apcState);
     __try {
         RtlCopyMemory(addr, req->dllPath, pathLen);
+        wow64Apc = FindExportAttached(peb, L"wow64.dll", "Wow64ApcRoutine");
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         st = GetExceptionCode();
-        DbgPrint("[kdrv] Write exception: 0x%X\n", st);
+        DbgPrint("[kdrv] attach exception: 0x%X\n", st);
     }
     KeUnstackDetachProcess(&apcState);
-    ObDereferenceObject(eproc);
 
-    if (!NT_SUCCESS(st)) {
-        SIZE_T zero = 0;
-        ZwFreeVirtualMemory(hProc, &addr, &zero, MEM_RELEASE);
-        ZwClose(hProc);
-        return st;
+    DbgPrint("[kdrv] path written, Wow64ApcRoutine=%p\n", wow64Apc);
+
+    if (!NT_SUCCESS(st) || !wow64Apc) {
+        SIZE_T z = 0; ZwFreeVirtualMemory(hProc, &addr, &z, MEM_RELEASE);
+        ZwClose(hProc); ObDereferenceObject(eproc);
+        return !NT_SUCCESS(st) ? st : STATUS_NOT_FOUND;
     }
-    DbgPrint("[kdrv] DLL path written OK\n");
 
-    // 5. Resolve ZwCreateThreadEx from ntoskrnl at runtime
-    UNICODE_STRING fnName;
-    RtlInitUnicodeString(&fnName, L"ZwCreateThreadEx");
-    ZwCreateThreadEx_t pZwCreateThreadEx =
-        (ZwCreateThreadEx_t)MmGetSystemRoutineAddress(&fnName);
-
-    if (!pZwCreateThreadEx) {
-        DbgPrint("[kdrv] ZwCreateThreadEx not found in ntoskrnl\n");
-        ZwClose(hProc);
+    // 5. Resolve ZwQueueApcThread at runtime
+    UNICODE_STRING fnQ;
+    RtlInitUnicodeString(&fnQ, L"ZwQueueApcThread");
+    ZwQueueApcThread_t pQueue =
+        (ZwQueueApcThread_t)MmGetSystemRoutineAddress(&fnQ);
+    if (!pQueue) {
+        DbgPrint("[kdrv] ZwQueueApcThread not exported\n");
+        SIZE_T z = 0; ZwFreeVirtualMemory(hProc, &addr, &z, MEM_RELEASE);
+        ZwClose(hProc); ObDereferenceObject(eproc);
         return STATUS_NOT_FOUND;
     }
 
-    // 6. Create remote thread: entry = LoadLibraryA, param = dllPath buffer
-    //    The target is a 32-bit (WOW64) process; loadLibraryA is a 32-bit address.
-    HANDLE hThread = NULL;
-    st = pZwCreateThreadEx(&hThread, THREAD_ALL_ACCESS, NULL, hProc,
-                           (PVOID)(ULONG_PTR)req->loadLibraryA, addr,
-                           0, 0, 0, 0, NULL);
-    DbgPrint("[kdrv] ZwCreateThreadEx = 0x%X  hThread=%p\n", st, hThread);
+    // 6. Enumerate threads; queue WoW64-safe APC to first that accepts
+    NTSTATUS injectSt = STATUS_NOT_FOUND;
+    PETHREAD pThread  = NULL;
+    int      tried    = 0;
 
-    if (NT_SUCCESS(st) && hThread) ZwClose(hThread);
+    while ((pThread = PsGetNextProcessThread(eproc, pThread)) != NULL) {
+        tried++;
+        HANDLE hThr = NULL;
+        NTSTATUS ts = ObOpenObjectByPointer(pThread, OBJ_KERNEL_HANDLE, NULL,
+                                             THREAD_ALL_ACCESS, *PsThreadType,
+                                             KernelMode, &hThr);
+        if (!NT_SUCCESS(ts)) {
+            DbgPrint("[kdrv] ObOpen(thr#%d)=0x%X\n", tried, ts); continue;
+        }
+
+        ts = pQueue(hThr,
+                    wow64Apc,
+                    (PVOID)(ULONG_PTR)req->loadLibraryA,  // fn32 for Wow64ApcRoutine
+                    addr,                                  // argument for LoadLibraryA
+                    NULL);
+        DbgPrint("[kdrv] ZwQueueApcThread(#%d)=0x%X\n", tried, ts);
+        ZwClose(hThr);
+
+        if (NT_SUCCESS(ts)) {
+            injectSt = STATUS_SUCCESS;
+            ObDereferenceObject(pThread);  // stop early — manual deref required
+            break;
+        }
+    }
+
     ZwClose(hProc);
-    return st;
+    ObDereferenceObject(eproc);
+    DbgPrint("[kdrv] inject=>0x%X tried=%d threads\n", injectSt, tried);
+    return injectSt;
 }
 
-// ─── IRP dispatch routines ──────────────────────────────────────────────────────────────────────
+// ─── IRP dispatch routines ────────────────────────────────────────────────
 
 static NTSTATUS DispatchCreateClose(PDEVICE_OBJECT DevObj, PIRP Irp) {
     UNREFERENCED_PARAMETER(DevObj);
@@ -138,7 +198,7 @@ static NTSTATUS DispatchDeviceControl(PDEVICE_OBJECT DevObj, PIRP Irp) {
     return st;
 }
 
-// ─── Driver entry / unload ───────────────────────────────────────────────────────────────────
+// ─── Driver entry / unload ───────────────────────────────────────────────
 
 static VOID DriverUnload(PDRIVER_OBJECT DriverObj) {
     UNREFERENCED_PARAMETER(DriverObj);
@@ -160,15 +220,14 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObj, PUNICODE_STRING RegPath) {
                                  FILE_DEVICE_UNKNOWN,
                                  FILE_DEVICE_SECURE_OPEN,
                                  FALSE, &g_Device);
-    if (!NT_SUCCESS(st)) { DbgPrint("[kdrv] IoCreateDevice = 0x%X\n", st); return st; }
+    if (!NT_SUCCESS(st)) { DbgPrint("[kdrv] IoCreateDevice=0x%X\n", st); return st; }
 
     UNICODE_STRING sym;
     RtlInitUnicodeString(&sym, SYMLINK_NAME);
     st = IoCreateSymbolicLink(&sym, &devName);
     if (!NT_SUCCESS(st)) {
-        DbgPrint("[kdrv] IoCreateSymbolicLink = 0x%X\n", st);
-        IoDeleteDevice(g_Device);
-        return st;
+        DbgPrint("[kdrv] IoCreateSymbolicLink=0x%X\n", st);
+        IoDeleteDevice(g_Device); return st;
     }
 
     DriverObj->DriverUnload                         = DriverUnload;
@@ -177,6 +236,6 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObj, PUNICODE_STRING RegPath) {
     DriverObj->MajorFunction[IRP_MJ_DEVICE_CONTROL] = DispatchDeviceControl;
     g_Device->Flags &= ~DO_DEVICE_INITIALIZING;
 
-    DbgPrint("[kdrv] Ready — \\Device\\kdrv / \\\\.\\kdrv\n");
+    DbgPrint("[kdrv] Ready\n");
     return STATUS_SUCCESS;
 }

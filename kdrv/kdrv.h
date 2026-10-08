@@ -1,8 +1,9 @@
 #pragma once
 // Shared between kernel driver (kdrv.c) and injector (main.cpp).
-// Include <ntddk.h> first in kernel code, or <Windows.h> in user code.
+// Include <ntddk.h>/<ntifs.h> first in kernel code, or <Windows.h> in user code.
 
-#define IOCTL_KDRV_INJECT  CTL_CODE(FILE_DEVICE_UNKNOWN, 0x900, METHOD_BUFFERED, FILE_ANY_ACCESS)
+// CTL_CODE(FILE_DEVICE_UNKNOWN=0x22, 0x900, METHOD_BUFFERED=0, FILE_ANY_ACCESS=0)
+#define IOCTL_KDRV_INJECT  0x00222400UL
 
 #pragma pack(push, 1)
 typedef struct {

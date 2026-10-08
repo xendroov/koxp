@@ -1,4 +1,5 @@
-#include <ntddk.h>
+#include <ntifs.h>
+#include <wdm.h>
 #include "kdrv.h"
 
 #define DEVICE_NAME  L"\\Device\\kdrv"

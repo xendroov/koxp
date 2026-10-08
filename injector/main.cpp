@@ -67,7 +67,7 @@ static DWORD FindProcessID(const wchar_t* name) {
     return pid;
 }
 
-// ─── Kernel driver injection (bypasses Xigncode3 ObRegisterCallbacks) ─────────────────────
+// ─── Kernel driver injection (bypasses Xigncode3 ObRegisterCallbacks) ─────────
 
 static SC_HANDLE g_hSCM = NULL;
 static SC_HANDLE g_hSvc = NULL;
@@ -129,28 +129,38 @@ static void UnloadDriver() {
 }
 
 static bool KernelInject(DWORD pid, const std::string& dllPath) {
-    // kdrv.sys'i injector.exe ile ayni klasorde ara
-    char exeDir[MAX_PATH]{};
-    GetModuleFileNameA(nullptr, exeDir, MAX_PATH);
-    char* slash = strrchr(exeDir, '\\');
-    if (slash) *(slash + 1) = '\0';
-    std::string sysPath = std::string(exeDir) + "kdrv.sys";
-
-    if (GetFileAttributesA(sysPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        std::cout << "[-] kdrv.sys bulunamadi: " << sysPath << "\n";
-        std::cout << "    -> kdrv.sys ve injector.exe ayni klasorde olmali\n";
-        return false;
-    }
-    std::cout << "[*] kdrv.sys bulundu: " << sysPath << "\n";
-
-    if (!LoadDriver(sysPath.c_str())) return false;
-
+    // Driver zaten yukluyse (preload modu) direkt kullan
     HANDLE hDev = CreateFileW(L"\\\\.\\kdrv",
         GENERIC_READ | GENERIC_WRITE, 0, nullptr,
         OPEN_EXISTING, 0, nullptr);
+    bool preloaded = (hDev != INVALID_HANDLE_VALUE);
+
+    if (!preloaded) {
+        char exeDir[MAX_PATH]{};
+        GetModuleFileNameA(nullptr, exeDir, MAX_PATH);
+        char* slash = strrchr(exeDir, '\\');
+        if (slash) *(slash + 1) = '\0';
+        std::string sysPath = std::string(exeDir) + "kdrv.sys";
+
+        if (GetFileAttributesA(sysPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            std::cout << "[-] kdrv.sys bulunamadi: " << sysPath << "\n";
+            std::cout << "    -> kdrv.sys ve injector.exe ayni klasorde olmali\n";
+            return false;
+        }
+        std::cout << "[*] kdrv.sys bulundu: " << sysPath << "\n";
+
+        if (!LoadDriver(sysPath.c_str())) return false;
+
+        hDev = CreateFileW(L"\\\\.\\kdrv",
+            GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+            OPEN_EXISTING, 0, nullptr);
+    } else {
+        std::cout << "[+] kdrv zaten yuklü (preloaded mod)\n";
+    }
+
     if (hDev == INVALID_HANDLE_VALUE) {
         std::cout << "[-] \\\\.\\kdrv acilamadi: " << GetLastError() << "\n";
-        UnloadDriver();
+        if (!preloaded) UnloadDriver();
         return false;
     }
 
@@ -174,7 +184,7 @@ static bool KernelInject(DWORD pid, const std::string& dllPath) {
     DWORD ioErr = GetLastError();
 
     CloseHandle(hDev);
-    UnloadDriver();
+    if (!preloaded) UnloadDriver();
 
     if (!ioOk) {
         std::cout << "[-] DeviceIoControl hatasi: " << ioErr << "\n";
@@ -184,7 +194,7 @@ static bool KernelInject(DWORD pid, const std::string& dllPath) {
     return true;
 }
 
-// ─── Classic LoadLibrary inject (fallback) ─────────────────────────────────────────────────────
+// ─── Classic LoadLibrary inject (fallback) ────────────────────────────────────
 
 static bool Inject(DWORD pid, const std::string& dllPath) {
     HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
@@ -234,7 +244,7 @@ static bool Inject(DWORD pid, const std::string& dllPath) {
     return ok;
 }
 
-// ─── Entry point ──────────────────────────────────────────────────────────────────────────────────────
+// ─── Entry point ──────────────────────────────────────────────────────────────
 
 int main(int argc, char* argv[]) {
     SetConsoleOutputCP(65001);
@@ -248,6 +258,36 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "[+] Yonetici olarak calisiyor\n";
 
+    // --preload: driver'i oyun acilmadan yukle, inject yapma
+    bool preloadMode = false;
+    std::string dllPath = "koxp.dll";
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--preload" || a == "-p") preloadMode = true;
+        else dllPath = a;
+    }
+
+    if (preloadMode) {
+        char exeDir[MAX_PATH]{};
+        GetModuleFileNameA(nullptr, exeDir, MAX_PATH);
+        char* sl = strrchr(exeDir, '\\');
+        if (sl) *(sl + 1) = '\0';
+        std::string sysPath = std::string(exeDir) + "kdrv.sys";
+
+        std::cout << "[*] Preload modu — kdrv.sys oyun acilmadan yukleniyor...\n";
+        if (!LoadDriver(sysPath.c_str())) {
+            std::cout << "[-] Preload basarisiz.\n";
+            system("pause"); return 1;
+        }
+        // SCM handle'larini kapat ama servisi calistirmaya devam et
+        if (g_hSvc) { CloseServiceHandle(g_hSvc); g_hSvc = nullptr; }
+        if (g_hSCM) { CloseServiceHandle(g_hSCM); g_hSCM = nullptr; }
+        std::cout << "[+] kdrv.sys aktif!\n";
+        std::cout << "[*] Simdi KnightOnline.exe'yi baslatın.\n";
+        std::cout << "[*] Oyun acildiktan sonra bu injector'i tekrar calistirin.\n";
+        system("pause"); return 0;
+    }
+
     const wchar_t* candidates[] = {
         L"KnightOnline.exe",
         L"KnightOnLine.exe",
@@ -255,9 +295,6 @@ int main(int argc, char* argv[]) {
         L"ko.exe",
         L"KO.exe",
     };
-
-    std::string dllPath = "koxp.dll";
-    if (argc > 1) dllPath = argv[1];
 
     char full[MAX_PATH]{};
     GetFullPathNameA(dllPath.c_str(), MAX_PATH, full, nullptr);

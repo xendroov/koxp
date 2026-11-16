@@ -26,6 +26,7 @@ int main(int argc, char* argv[]) {
     DWORD pid = FindPID(L"KnightOnLine.exe");
     if (!pid) {
         printf("[-] KnightOnLine.exe bulunamadi. Once oyunu ac.\n");
+        system("pause");
         return 1;
     }
     printf("[+] KnightOnLine.exe PID: %lu\n", pid);
@@ -33,6 +34,7 @@ int main(int argc, char* argv[]) {
     HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
     if (!hProc) {
         printf("[-] OpenProcess FAILED: %lu\n", GetLastError());
+        system("pause");
         return 1;
     }
 
@@ -41,5 +43,7 @@ int main(int argc, char* argv[]) {
 
     if (!base) { printf("[-] Inject FAILED\n"); return 1; }
     printf("[+] Basarili. C:\\koxp.log izle.\n");
+    system("pause");
     return 0;
 }
+

@@ -13,9 +13,9 @@ $vcvars = "$vsPath\VC\Auxiliary\Build\vcvars32.bat"
 
 $cmd = "call `"$vcvars`" >nul 2>&1 && " +
        "cl /LD /MD /O2 /std:c++17 /W0 /I src " +
-       "src\dllmain.cpp src\game\player.cpp " +
+       "src\dllmain.cpp src\game\player.cpp src\libvorbisfile_proxy.cpp " +
        "/Fe:libvorbisfile.dll " +
-       "/link /MACHINE:X86 /DLL /DEF:src\libvorbisfile.def kernel32.lib user32.lib"
+       "/link /MACHINE:X86 /DLL kernel32.lib user32.lib"
 
 Write-Host "[*] Building libvorbisfile.dll..."
 $result = cmd /c $cmd 2>&1

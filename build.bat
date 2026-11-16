@@ -6,8 +6,9 @@ cl /LD /MD /O2 /std:c++17 /W0 ^
    /I src ^
    src\dllmain.cpp ^
    src\game\player.cpp ^
+   src\libvorbisfile_proxy.cpp ^
    /Fe:libvorbisfile.dll ^
-   /link /MACHINE:X86 /DLL /DEF:src\libvorbisfile.def kernel32.lib user32.lib
+   /link /MACHINE:X86 /DLL kernel32.lib user32.lib
 if exist libvorbisfile.dll (echo [+] libvorbisfile.dll OK) else (echo [-] libvorbisfile.dll FAILED & goto end)
 
 echo [*] Building injector.exe...

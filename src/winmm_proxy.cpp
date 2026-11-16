@@ -5,17 +5,15 @@
 #include <Windows.h>
 #include <mmsystem.h>
 
-// DllMain'den erken init edilir
-HMODULE g_realWinmm = nullptr;
-
 static HMODULE RealWinmm() {
-    if (!g_realWinmm) {
+    static HMODULE h = nullptr;
+    if (!h) {
         char path[MAX_PATH];
         GetSystemDirectoryA(path, sizeof(path));
         lstrcatA(path, "\\winmm.dll");
-        g_realWinmm = LoadLibraryA(path);
+        h = LoadLibraryA(path);
     }
-    return g_realWinmm;
+    return h;
 }
 static FARPROC Sym(const char* name) {
     return GetProcAddress(RealWinmm(), name);

@@ -5,7 +5,7 @@
 static HMODULE g_mod = nullptr;
 
 static DWORD WINAPI MainThread(LPVOID) {
-    Sleep(8000);
+    Sleep(10000); // KO tam acilana kadar bekle
     KLog("=== koxp basladi ===");
 
     while (true) {
@@ -33,9 +33,7 @@ BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hMod);
         g_mod = hMod;
-        // TEST: thread yok, sadece proxy — loader lock deadlock'u engellendi
-        // Thread onaylaninca bu satiri ac:
-        // CreateThread(nullptr, 0, MainThread, nullptr, 0, nullptr);
+        CreateThread(nullptr, 0, MainThread, nullptr, 0, nullptr);
     }
     return TRUE;
 }

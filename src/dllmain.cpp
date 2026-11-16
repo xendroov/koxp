@@ -35,6 +35,8 @@ BOOL APIENTRY DllMain(HMODULE hMod, DWORD reason, LPVOID) {
         DisableThreadLibraryCalls(hMod);
         g_mod = hMod;
         CreateThread(nullptr, 0, MainThread, nullptr, 0, nullptr);
+        // TEST: thread'i kapat, sadece proxy cal
+        // return TRUE;
     }
     return TRUE;
 }

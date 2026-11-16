@@ -12,7 +12,7 @@ if (-not $vsPath) { Write-Host "[-] Visual Studio bulunamadi"; exit 1 }
 $vcvars = "$vsPath\VC\Auxiliary\Build\vcvars32.bat"
 
 $cmd = "call `"$vcvars`" >nul 2>&1 && " +
-       "cl /LD /MD /O2 /W0 /I src " +
+       "cl /LD /MD /O2 /std:c++17 /W0 /I src " +
        "src\dllmain.cpp src\game\player.cpp " +
        "/Fe:libvorbisfile.dll " +
        "/link /MACHINE:X86 /DLL /DEF:src\libvorbisfile.def kernel32.lib user32.lib"

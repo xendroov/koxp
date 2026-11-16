@@ -15,7 +15,7 @@ cl /MD /O2 /W0 ^
    injector\main.cpp ^
    injector\manual_map.cpp ^
    /Fe:injector.exe ^
-   /link /MACHINE:X86 /SUBSYSTEM:CONSOLE kernel32.lib user32.lib
+   /link /MACHINE:X86 /SUBSYSTEM:CONSOLE kernel32.lib user32.lib advapi32.lib
 if exist injector.exe (echo [+] injector.exe OK) else (echo [-] injector.exe FAILED)
 
 :end

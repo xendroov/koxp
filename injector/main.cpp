@@ -46,8 +46,19 @@ static bool KdrvInject(DWORD pid, const char* dllPath) {
     return true;
 }
 
+static void EnableDebugPrivilege() {
+    HANDLE hToken;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &hToken)) return;
+    TOKEN_PRIVILEGES tp{ 1 };
+    LookupPrivilegeValueA(nullptr, "SeDebugPrivilege", &tp.Privileges[0].Luid);
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), nullptr, nullptr);
+    CloseHandle(hToken);
+}
+
 int main(int argc, char* argv[]) {
     printf("=== koxp injector ===\n");
+    EnableDebugPrivilege();
 
     const char* dllPath = (argc > 1) ? argv[1] : "koxp.dll";
 

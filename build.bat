@@ -1,6 +1,8 @@
 @echo off
 echo [*] Building koxp.dll (x86)...
 
+call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars32.bat" >nul 2>&1
+
 cl /LD /MD /O2 /std:c++17 /W0 ^
    /I src ^
    src\dllmain.cpp ^

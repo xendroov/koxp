@@ -5,6 +5,7 @@
 static HMODULE g_mod = nullptr;
 
 static DWORD WINAPI MainThread(LPVOID) {
+    Sleep(5000); // KO initialize olana kadar bekle
     KLog("=== koxp basladi ===");
 
     while (true) {

@@ -1,17 +1,21 @@
 @echo off
-echo [*] Building koxp.dll (x86)...
-
 call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars32.bat" >nul 2>&1
 
+echo [*] Building koxp.dll...
 cl /LD /MD /O2 /std:c++17 /W0 ^
    /I src ^
    src\dllmain.cpp ^
    src\game\player.cpp ^
    /Fe:koxp.dll ^
    /link /MACHINE:X86 /DLL kernel32.lib user32.lib
+if exist koxp.dll (echo [+] koxp.dll OK) else (echo [-] koxp.dll FAILED & goto end)
 
-if exist koxp.dll (
-    echo [+] OK: koxp.dll hazir
-) else (
-    echo [-] HATA: derleme basarisiz
-)
+echo [*] Building injector.exe...
+cl /MD /O2 /W0 ^
+   injector\main.cpp ^
+   injector\manual_map.cpp ^
+   /Fe:injector.exe ^
+   /link /MACHINE:X86 /SUBSYSTEM:CONSOLE kernel32.lib user32.lib
+if exist injector.exe (echo [+] injector.exe OK) else (echo [-] injector.exe FAILED)
+
+:end
